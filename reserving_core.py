@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-SKRIPT_VERSION = "1.3.0"
+SKRIPT_VERSION = "1.3.1"
 
 
 # --------------------------------------------------------------------------- #

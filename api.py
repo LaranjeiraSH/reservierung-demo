@@ -77,7 +77,17 @@ class BerechnungsAnfrage(BaseModel):
 
 # ------------------------------ Logik ------------------------------------- #
 def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik, vorgang, input_fingerprint):
+    zeilen = len(sd)
+    mit_betrag = int((pd.to_numeric(sd["betrag"], errors="coerce").fillna(0) != 0).sum())
+    if mit_betrag == 0:
+        raise HTTPException(400, f"Alle {zeilen} Schadendaten-Zeilen der Sparte {sparte} haben Betrag 0 oder leer. "
+                                 "Bitte das Mapping von schadendaten.betrag pruefen.")
     dreieck = core.baue_dreieck(sd, nm)
+    spaltensummen = dreieck.fillna(0).sum()
+    leer = [int(ej) for ej, summe in spaltensummen.items() if summe == 0]
+    if leer:
+        raise HTTPException(400, f"Entwicklungsjahr(e) {leer} haben nur Betraege 0 oder leer "
+                                 f"({mit_betrag} von {zeilen} Zeilen mit Betrag). Bitte Datenbasis/Mapping pruefen.")
     befunde = core.pruefe_daten(dreieck, stichtagsjahr)
     if any(b["stufe"] == "FEHLER" for b in befunde):
         return {"status": "DATENFEHLER", "pruefbefunde": befunde, "metadaten": _meta(vorgang, input_fingerprint)}
@@ -156,6 +166,30 @@ def _meta(vorgang, fingerprint, **extra):
     }
 
 
+def _ohne_nan(obj):
+    """Ersetzt NaN/Inf durch None, damit die Antwort immer gueltiges JSON ist."""
+    import math
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _ohne_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_ohne_nan(v) for v in obj]
+    return obj
+
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(Exception)
+async def _unerwarteter_fehler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={
+        "status": "FEHLER",
+        "detail": f"Unerwarteter Fehler im Reservierungsservice: {type(exc).__name__}: {exc}",
+        "skript_version": core.SKRIPT_VERSION})
+
+
 # ----------------------------- Endpunkte ---------------------------------- #
 @app.get("/health")
 def health():
@@ -164,6 +198,16 @@ def health():
 
 @app.post("/api/v1/reserven/berechnen")
 def berechnen(req: BerechnungsAnfrage):
+    # Diagnose im Render-Log: was ist tatsaechlich angekommen?
+    print("EINGANG", json.dumps({
+        "vorgangsnummer": req.vorgangsnummer, "sparte": req.sparte, "stichtagsjahr": req.stichtagsjahr,
+        "neue_meldungen_einbeziehen": req.neue_meldungen_einbeziehen,
+        "anzahl_schadendaten": len(req.schadendaten),
+        "sparten_in_schadendaten": sorted({str(z.sparte) for z in req.schadendaten}),
+        "beispiel_schadendaten": [z.model_dump() for z in req.schadendaten[:3]],
+        "anzahl_neue_meldungen": len(req.neue_meldungen),
+        "anzahl_vorquartal": len(req.reserven_vorquartal),
+    }, ensure_ascii=False, default=str), flush=True)
     if not req.schadendaten:
         raise HTTPException(400, "Keine Schadendaten übergeben")
     fp = hashlib.sha256(json.dumps(req.model_dump(), sort_keys=True, default=str).encode()).hexdigest()
@@ -177,8 +221,8 @@ def berechnen(req: BerechnungsAnfrage):
     nm = pd.DataFrame(filt(req.neue_meldungen)) if filt(req.neue_meldungen) else None
     vq = pd.DataFrame(filt(req.reserven_vorquartal)) if filt(req.reserven_vorquartal) \
         else pd.DataFrame(columns=["anfalljahr", "reserve_vorher"])
-    return _rechne(req.sparte, req.stichtagsjahr, req.tail_faktor, req.wesentlichkeitsschwelle, sd, nm, vq,
-                   [o.model_dump() for o in req.faktor_overrides], req.grafik, req.vorgangsnummer, fp)
+    return _ohne_nan(_rechne(req.sparte, req.stichtagsjahr, req.tail_faktor, req.wesentlichkeitsschwelle, sd, nm, vq,
+                             [o.model_dump() for o in req.faktor_overrides], req.grafik, req.vorgangsnummer, fp))
 
 
 @app.post("/api/v1/reserven/berechnen-aus-excel")
@@ -194,5 +238,5 @@ async def berechnen_aus_excel(datei: UploadFile = File(...), sparte: str = Form(
         overrides = json.loads(faktor_overrides_json)
     except Exception as e:
         raise HTTPException(400, f"Datei konnte nicht gelesen werden: {e}")
-    return _rechne(sparte, d["stichtagsjahr"], d["tail_faktor"], d["wesentlichkeitsschwelle"],
-                   d["schadendaten"], d["neue_meldungen"], d["vorquartal"], overrides, True, vorgangsnummer, fp)
+    return _ohne_nan(_rechne(sparte, d["stichtagsjahr"], d["tail_faktor"], d["wesentlichkeitsschwelle"],
+                             d["schadendaten"], d["neue_meldungen"], d["vorquartal"], overrides, True, vorgangsnummer, fp))
