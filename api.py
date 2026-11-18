@@ -139,6 +139,7 @@ def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik
         ],
         "pruefbefunde": befunde,
         "grafik_png_base64": core.grafik_png_base64(tab, f"Reserve {sparte}: Vorquartal vs. neu (TEUR)") if grafik else "",
+        "grafik_html": core.grafik_html(tab, f"Reserve {sparte}: Vorquartal vs. neu (TEUR)", schwelle) if grafik else "",
         "metadaten": _meta(vorgang, input_fingerprint, methode="Chain-Ladder volumengewichtet, Mack-SE",
                            tail_faktor=tail, anzahl_overrides=len(ov)),
     }

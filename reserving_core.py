@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-SKRIPT_VERSION = "1.2.0"
+SKRIPT_VERSION = "1.3.0"
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +185,85 @@ def grafik_png_base64(df: pd.DataFrame, titel: str) -> str:
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode()
 
+
+
+def _de(x: float, nachkomma: int = 0) -> str:
+    """Zahl im deutschen Format (1.234,5)."""
+    s = f"{x:,.{nachkomma}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def grafik_html(df: pd.DataFrame, titel: str, schwelle: float = 0.10) -> str:
+    """Balkendiagramm Vorquartal vs. neu als eigenständiges HTML/SVG-Fragment.
+
+    Ohne JavaScript, ohne externe Dateien, nur Inline-Attribute: geeignet für
+    Bizagi-Widgets, die HTML aus einem Attribut anzeigen.
+    """
+    import math
+    from html import escape
+
+    W, H = 760, 360
+    ml, mr, mt, mb = 70, 20, 64, 56
+    pw, ph = W - ml - mr, H - mt - mb
+    vorher = [float(v) for v in df["reserve_vorher"]]
+    nachher = [float(v) for v in df["reserve"]]
+    jahre = [str(int(a)) for a in df["anfalljahr"]]
+    dpct = [float(v) for v in df["delta_prozent"]]
+    n = len(jahre)
+
+    roh = max(vorher + nachher + [1.0]) * 1.12
+    exp = 10 ** math.floor(math.log10(roh / 5))
+    schritt = next(f * exp for f in (1, 2, 2.5, 5, 10) if roh / (f * exp) <= 6)
+    ymax = schritt * math.ceil(roh / schritt)
+    y = lambda v: mt + ph - (v / ymax) * ph
+
+    c_vor, c_neu, c_ink, c_text, c_grid, c_hl = "#C697E8", "#05803E", "#0C0E0D", "#303633", "#E4E7E5", "#652A88"
+    font = "Open Sans, Segoe UI, Arial, sans-serif"
+    t = []
+    t.append(f'<text x="{ml}" y="26" font-size="16" font-weight="700" fill="{c_ink}">{escape(titel)}</text>')
+    # Legende
+    lx = W - mr - 250
+    t.append(f'<rect x="{lx}" y="14" width="12" height="12" rx="2" fill="{c_vor}"/>'
+             f'<text x="{lx + 18}" y="25" font-size="12" fill="{c_text}">Vorquartal</text>')
+    t.append(f'<rect x="{lx + 110}" y="14" width="12" height="12" rx="2" fill="{c_neu}"/>'
+             f'<text x="{lx + 128}" y="25" font-size="12" fill="{c_text}">Neu berechnet</text>')
+    # Raster und Achse
+    v = 0.0
+    while v <= ymax + 1e-9:
+        yy = y(v)
+        t.append(f'<line x1="{ml}" x2="{W - mr}" y1="{yy:.1f}" y2="{yy:.1f}" stroke="{c_grid}" stroke-width="1"/>')
+        t.append(f'<text x="{ml - 8}" y="{yy + 4:.1f}" font-size="11" text-anchor="end" fill="{c_text}">{_de(v)}</text>')
+        v += schritt
+    t.append(f'<text x="16" y="{mt + ph / 2:.1f}" font-size="11" fill="{c_text}" text-anchor="middle" '
+             f'transform="rotate(-90 16 {mt + ph / 2:.1f})">Reserve (TEUR)</text>')
+    # Balken
+    gw = pw / n
+    bw = min(26.0, gw * 0.32)
+    for i in range(n):
+        cx = ml + gw * i + gw / 2
+        for wert, farbe, dx in ((vorher[i], c_vor, -bw - 2), (nachher[i], c_neu, 2)):
+            hoehe = max(1.5, (wert / ymax) * ph)
+            t.append(f'<rect x="{cx + dx:.1f}" y="{mt + ph - hoehe:.1f}" width="{bw:.1f}" height="{hoehe:.1f}" '
+                     f'rx="2" fill="{farbe}"><title>{jahre[i]}: {_de(wert)} TEUR</title></rect>')
+        if nachher[i] >= ymax * 0.04:
+            t.append(f'<text x="{cx + 2 + bw / 2:.1f}" y="{y(nachher[i]) - 6:.1f}" font-size="11" '
+                     f'text-anchor="middle" fill="{c_ink}">{_de(nachher[i])}</text>')
+        if abs(dpct[i]) > schwelle:
+            vz = "+" if dpct[i] > 0 else "−"
+            oben = y(max(vorher[i], nachher[i])) - 24
+            t.append(f'<text x="{cx:.1f}" y="{oben:.1f}" font-size="12" font-weight="700" text-anchor="middle" '
+                     f'fill="{c_hl}">{vz}{_de(abs(dpct[i]) * 100, 1)} %</text>')
+        t.append(f'<text x="{cx:.1f}" y="{mt + ph + 20:.1f}" font-size="12" text-anchor="middle" fill="{c_text}">{jahre[i]}</text>')
+    t.append(f'<line x1="{ml}" x2="{W - mr}" y1="{mt + ph}" y2="{mt + ph}" stroke="#A1AAA5" stroke-width="1"/>')
+    t.append(f'<text x="{ml + pw / 2:.1f}" y="{H - 12}" font-size="11" text-anchor="middle" fill="{c_text}">Anfalljahr</text>')
+
+    summe_v, summe_n = sum(vorher), sum(nachher)
+    label = (f"Reserve je Anfalljahr, Vorquartal gesamt {_de(summe_v)} TEUR, "
+             f"neu gesamt {_de(summe_n)} TEUR")
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+           f'style="max-width:100%;height:auto;display:block" role="img" aria-label="{escape(label)}" '
+           f'font-family="{font}">' + "".join(t) + "</svg>")
+    return f'<div style="font-family:{font};max-width:{W}px">{svg}</div>'
 
 # --------------------------------------------------------------------------- #
 # Excel-Einlesen (Format der Demo-Datenbasis)
