@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-SKRIPT_VERSION = "1.3.1"
+SKRIPT_VERSION = "1.3.2"
 
 
 # --------------------------------------------------------------------------- #
@@ -48,15 +48,15 @@ def pruefe_daten(dreieck: pd.DataFrame, stichtagsjahr: int) -> list[dict]:
         zeile = dreieck.loc[ay]
         for ej in range(1, erwartet + 1):
             if pd.isna(zeile.get(ej)):
-                befunde.append({"stufe": "FEHLER", "anfalljahr": int(ay), "entwicklungsjahr": ej,
-                                "meldung": "Wert im Dreieck fehlt"})
+                befunde.append({"stufe": "ERROR", "anfalljahr": int(ay), "entwicklungsjahr": ej,
+                                "meldung": "Value missing in the triangle"})
         werte = zeile.dropna()
         if (werte < 0).any():
-            befunde.append({"stufe": "FEHLER", "anfalljahr": int(ay), "entwicklungsjahr": None,
-                            "meldung": "Negative kumulierte Zahlung"})
+            befunde.append({"stufe": "ERROR", "anfalljahr": int(ay), "entwicklungsjahr": None,
+                            "meldung": "Negative cumulative payment"})
         if (werte.diff().dropna() < 0).any():
-            befunde.append({"stufe": "WARNUNG", "anfalljahr": int(ay), "entwicklungsjahr": None,
-                            "meldung": "Kumulierte Zahlungen sinken (Regress/Korrektur prüfen)"})
+            befunde.append({"stufe": "WARNING", "anfalljahr": int(ay), "entwicklungsjahr": None,
+                            "meldung": "Cumulative payments decrease (check recoveries or corrections)"})
     return befunde
 
 
@@ -172,10 +172,10 @@ def grafik_png_base64(df: pd.DataFrame, titel: str) -> str:
 
     fig, ax = plt.subplots(figsize=(8, 4), dpi=110)
     x = np.arange(len(df))
-    ax.bar(x - 0.2, df["reserve_vorher"], 0.4, label="Vorquartal", color="#9DB3D9")
-    ax.bar(x + 0.2, df["reserve"], 0.4, label="Neu berechnet", color="#1F3864")
+    ax.bar(x - 0.2, df["reserve_vorher"], 0.4, label="Prior quarter", color="#9DB3D9")
+    ax.bar(x + 0.2, df["reserve"], 0.4, label="Recalculated", color="#1F3864")
     ax.set_xticks(x, df["anfalljahr"].astype(str))
-    ax.set_ylabel("Reserve (TEUR)")
+    ax.set_ylabel("Reserves (TEUR)")
     ax.set_title(titel)
     ax.legend(frameon=False)
     ax.spines[["top", "right"]].set_visible(False)
@@ -190,7 +190,7 @@ def grafik_png_base64(df: pd.DataFrame, titel: str) -> str:
 def _de(x: float, nachkomma: int = 0) -> str:
     """Zahl im deutschen Format (1.234,5)."""
     s = f"{x:,.{nachkomma}f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
 
 
 def grafik_html(df: pd.DataFrame, titel: str, schwelle: float = 0.10) -> str:
@@ -224,9 +224,9 @@ def grafik_html(df: pd.DataFrame, titel: str, schwelle: float = 0.10) -> str:
     # Legende
     lx = W - mr - 250
     t.append(f'<rect x="{lx}" y="14" width="12" height="12" rx="2" fill="{c_vor}"/>'
-             f'<text x="{lx + 18}" y="25" font-size="12" fill="{c_text}">Vorquartal</text>')
+             f'<text x="{lx + 18}" y="25" font-size="12" fill="{c_text}">Prior quarter</text>')
     t.append(f'<rect x="{lx + 110}" y="14" width="12" height="12" rx="2" fill="{c_neu}"/>'
-             f'<text x="{lx + 128}" y="25" font-size="12" fill="{c_text}">Neu berechnet</text>')
+             f'<text x="{lx + 128}" y="25" font-size="12" fill="{c_text}">Recalculated</text>')
     # Raster und Achse
     v = 0.0
     while v <= ymax + 1e-9:
@@ -235,7 +235,7 @@ def grafik_html(df: pd.DataFrame, titel: str, schwelle: float = 0.10) -> str:
         t.append(f'<text x="{ml - 8}" y="{yy + 4:.1f}" font-size="11" text-anchor="end" fill="{c_text}">{_de(v)}</text>')
         v += schritt
     t.append(f'<text x="16" y="{mt + ph / 2:.1f}" font-size="11" fill="{c_text}" text-anchor="middle" '
-             f'transform="rotate(-90 16 {mt + ph / 2:.1f})">Reserve (TEUR)</text>')
+             f'transform="rotate(-90 16 {mt + ph / 2:.1f})">Reserves (TEUR)</text>')
     # Balken
     gw = pw / n
     bw = min(26.0, gw * 0.32)
@@ -252,14 +252,14 @@ def grafik_html(df: pd.DataFrame, titel: str, schwelle: float = 0.10) -> str:
             vz = "+" if dpct[i] > 0 else "−"
             oben = y(max(vorher[i], nachher[i])) - 24
             t.append(f'<text x="{cx:.1f}" y="{oben:.1f}" font-size="12" font-weight="700" text-anchor="middle" '
-                     f'fill="{c_hl}">{vz}{_de(abs(dpct[i]) * 100, 1)} %</text>')
+                     f'fill="{c_hl}">{vz}{abs(dpct[i]) * 100:.1f}%</text>')
         t.append(f'<text x="{cx:.1f}" y="{mt + ph + 20:.1f}" font-size="12" text-anchor="middle" fill="{c_text}">{jahre[i]}</text>')
     t.append(f'<line x1="{ml}" x2="{W - mr}" y1="{mt + ph}" y2="{mt + ph}" stroke="#A1AAA5" stroke-width="1"/>')
-    t.append(f'<text x="{ml + pw / 2:.1f}" y="{H - 12}" font-size="11" text-anchor="middle" fill="{c_text}">Anfalljahr</text>')
+    t.append(f'<text x="{ml + pw / 2:.1f}" y="{H - 12}" font-size="11" text-anchor="middle" fill="{c_text}">Accident year</text>')
 
     summe_v, summe_n = sum(vorher), sum(nachher)
-    label = (f"Reserve je Anfalljahr, Vorquartal gesamt {_de(summe_v)} TEUR, "
-             f"neu gesamt {_de(summe_n)} TEUR")
+    label = (f"Reserves by accident year, prior quarter total {_de(summe_v)} TEUR, "
+             f"recalculated total {_de(summe_n)} TEUR")
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
            f'style="max-width:100%;height:auto;display:block" role="img" aria-label="{escape(label)}" '
            f'font-family="{font}">' + "".join(t) + "</svg>")

@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field, model_validator
 
 import reserving_core as core
 
+LOB_EN = {"Kfz": "Motor", "Sach": "Property", "Haftpflicht": "Liability"}
+
 app = FastAPI(title="Reservierungs-Service (Demo)", version=core.SKRIPT_VERSION)
 
 
@@ -80,16 +82,16 @@ def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik
     zeilen = len(sd)
     mit_betrag = int((pd.to_numeric(sd["betrag"], errors="coerce").fillna(0) != 0).sum())
     if mit_betrag == 0:
-        raise HTTPException(400, f"Alle {zeilen} Schadendaten-Zeilen der Sparte {sparte} haben Betrag 0 oder leer. "
-                                 "Bitte das Mapping von schadendaten.betrag pruefen.")
+        raise HTTPException(400, f"All {zeilen} claims data rows for line of business {sparte} have an empty or zero amount. "
+                                 "Please check the mapping of schadendaten.betrag.")
     dreieck = core.baue_dreieck(sd, nm)
     spaltensummen = dreieck.fillna(0).sum()
     leer = [int(ej) for ej, summe in spaltensummen.items() if summe == 0]
     if leer:
-        raise HTTPException(400, f"Entwicklungsjahr(e) {leer} haben nur Betraege 0 oder leer "
-                                 f"({mit_betrag} von {zeilen} Zeilen mit Betrag). Bitte Datenbasis/Mapping pruefen.")
+        raise HTTPException(400, f"Development year(s) {leer} contain only empty or zero amounts "
+                                 f"({mit_betrag} of {zeilen} rows have an amount). Please check the data or the mapping.")
     befunde = core.pruefe_daten(dreieck, stichtagsjahr)
-    if any(b["stufe"] == "FEHLER" for b in befunde):
+    if any(b["stufe"] == "ERROR" for b in befunde):
         return {"status": "DATENFEHLER", "pruefbefunde": befunde, "metadaten": _meta(vorgang, input_fingerprint)}
 
     # Erst ohne Overrides rechnen, um echte Abweichungen zu erkennen (Bizagi darf die ganze Faktortabelle schicken)
@@ -101,7 +103,7 @@ def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik
             continue
         if abs(wert - basis.faktoren_berechnet[ej - 1]) > 5e-5:
             if len((o.get("begruendung") or "").strip()) < 5:
-                raise HTTPException(422, f"Faktor EJ {ej} wurde angepasst, aber ohne Begründung")
+                raise HTTPException(422, f"The factor for development year {ej} was adjusted without a justification")
             ov[ej], begr[ej] = wert, o["begruendung"]
     erg = core.chain_ladder(dreieck, tail, ov)
     tab = core.vergleiche_mit_vorquartal(erg.je_anfalljahr, vq)
@@ -121,7 +123,7 @@ def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik
             "delta_prozent": round(delta_pct, 4),
             "mack_se_gesamt": round(float((tab["mack_se"] ** 2).sum() ** 0.5), 1),  # vereinfacht: ohne Kovarianzen
             "wesentlich": wesentlich,
-            "empfehlung": "Zusatzfreigabe CFO + Information Pricing" if wesentlich else "Standardfreigabe",
+            "empfehlung": "Additional CFO approval and Pricing notification" if wesentlich else "Standard approval",
         },
         "je_anfalljahr": [
             {
@@ -148,9 +150,9 @@ def _rechne(sparte, stichtagsjahr, tail, schwelle, sd, nm, vq, overrides, grafik
             for j in range(len(erg.faktoren_berechnet))
         ],
         "pruefbefunde": befunde,
-        "grafik_png_base64": core.grafik_png_base64(tab, f"Reserve {sparte}: Vorquartal vs. neu (TEUR)") if grafik else "",
-        "grafik_html": core.grafik_html(tab, f"Reserve {sparte}: Vorquartal vs. neu (TEUR)", schwelle) if grafik else "",
-        "metadaten": _meta(vorgang, input_fingerprint, methode="Chain-Ladder volumengewichtet, Mack-SE",
+        "grafik_png_base64": core.grafik_png_base64(tab, f"Reserves {LOB_EN.get(sparte, sparte)}: prior quarter vs. new (TEUR)") if grafik else "",
+        "grafik_html": core.grafik_html(tab, f"Reserves {LOB_EN.get(sparte, sparte)}: prior quarter vs. new (TEUR)", schwelle) if grafik else "",
+        "metadaten": _meta(vorgang, input_fingerprint, methode="Volume-weighted chain-ladder, Mack standard error",
                            tail_faktor=tail, anzahl_overrides=len(ov)),
     }
 
@@ -185,8 +187,8 @@ from fastapi.responses import JSONResponse
 @app.exception_handler(Exception)
 async def _unerwarteter_fehler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={
-        "status": "FEHLER",
-        "detail": f"Unerwarteter Fehler im Reservierungsservice: {type(exc).__name__}: {exc}",
+        "status": "ERROR",
+        "detail": f"Unexpected error in the reserving service: {type(exc).__name__}: {exc}",
         "skript_version": core.SKRIPT_VERSION})
 
 
@@ -209,7 +211,7 @@ def berechnen(req: BerechnungsAnfrage):
         "anzahl_vorquartal": len(req.reserven_vorquartal),
     }, ensure_ascii=False, default=str), flush=True)
     if not req.schadendaten:
-        raise HTTPException(400, "Keine Schadendaten übergeben")
+        raise HTTPException(400, "No claims data provided")
     fp = hashlib.sha256(json.dumps(req.model_dump(), sort_keys=True, default=str).encode()).hexdigest()
     def filt(items):
         return [i.model_dump() for i in items
@@ -217,7 +219,7 @@ def berechnen(req: BerechnungsAnfrage):
                 and getattr(i, "entwicklungsjahr", 0) is not None]
     sd = pd.DataFrame(filt(req.schadendaten))
     if sd.empty:
-        raise HTTPException(400, f"Keine Schadendaten für Sparte {req.sparte}")
+        raise HTTPException(400, f"No claims data for line of business {req.sparte}")
     nm = pd.DataFrame(filt(req.neue_meldungen)) if filt(req.neue_meldungen) else None
     vq = pd.DataFrame(filt(req.reserven_vorquartal)) if filt(req.reserven_vorquartal) \
         else pd.DataFrame(columns=["anfalljahr", "reserve_vorher"])
@@ -237,6 +239,6 @@ async def berechnen_aus_excel(datei: UploadFile = File(...), sparte: str = Form(
         d = core.lade_excel(io.BytesIO(inhalt), sparte, neue_meldungen_einbeziehen)
         overrides = json.loads(faktor_overrides_json)
     except Exception as e:
-        raise HTTPException(400, f"Datei konnte nicht gelesen werden: {e}")
+        raise HTTPException(400, f"The file could not be read: {e}")
     return _ohne_nan(_rechne(sparte, d["stichtagsjahr"], d["tail_faktor"], d["wesentlichkeitsschwelle"],
                              d["schadendaten"], d["neue_meldungen"], d["vorquartal"], overrides, True, vorgangsnummer, fp))
